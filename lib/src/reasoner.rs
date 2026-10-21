@@ -1297,9 +1297,12 @@ impl Reasoner {
             self.base.extend(delta.iter().cloned());
             self.all_triples_input.extend(delta.iter().cloned());
             // Rebuild DisjointSets from full materialized + delta for list structure
-            let mut all_triples_for_ds = self.input.clone();
-            all_triples_for_ds.extend(delta);
-            let ds = DisjointSets::new(&all_triples_for_ds, self.rdffirst_node, self.rdfrest_node, self.rdfnil_node);
+            let ds = DisjointSets::new(
+                self.input.iter().chain(&delta),
+                self.rdffirst_node,
+                self.rdfrest_node,
+                self.rdfnil_node,
+            );
             self.run_fixpoint_loop(rdftype_node, owlthing_node, owlsameas_node, &ds);
         } else {
             // Full materialization mode
@@ -2164,9 +2167,10 @@ impl Reasoner {
         }
 
         // Non-destructive read of stable partitions (preserves Variable state for incremental use)
-        let mut output: Vec<KeyedTriple> = Vec::new();
+        let mut output: Vec<KeyedTriple>;
         {
             let stable = self.all_triples_input.stable.borrow();
+            output = Vec::with_capacity(stable.iter().map(|batch| batch.len()).sum());
             for batch in stable.iter() {
                 output.extend(
                     batch.iter()
@@ -2182,8 +2186,7 @@ impl Reasoner {
         // in self.input at this point and has been scanned by an earlier call.
         // In full mode, everything is "new".
         if self.is_materialized {
-            let mut delta = output.clone();
-            get_unique(&self.input, &mut delta);
+            let delta = sorted_difference(&output, &self.input);
             self.detect_rdfs_datatype_inconsistencies(&output, &delta);
         } else {
             self.detect_rdfs_datatype_inconsistencies(&output, &output);
@@ -2384,6 +2387,20 @@ fn term_in_datatype_space(term: &Term, datatype_iri: &str) -> Option<bool> {
         }
         _ => return None,
     })
+}
+
+/// The triples in `a` that are not in `b`; both must be sorted ascending.
+fn sorted_difference(a: &[KeyedTriple], b: &[KeyedTriple]) -> Vec<KeyedTriple> {
+    let mut j = 0;
+    a.iter()
+        .filter(|&&x| {
+            while j < b.len() && b[j] < x {
+                j += 1;
+            }
+            j == b.len() || b[j] != x
+        })
+        .copied()
+        .collect()
 }
 
 /**

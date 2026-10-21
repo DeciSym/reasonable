@@ -11,14 +11,25 @@ pub struct DisjointSets {
 }
 
 impl DisjointSets {
-    pub fn new(input: &[KeyedTriple], rdffirst_node: URI, rdfrest_node: URI, rdfnil_node: URI) -> Self {
+    pub fn new<'a>(
+        input: impl IntoIterator<Item = &'a KeyedTriple>,
+        rdffirst_node: URI,
+        rdfrest_node: URI,
+        rdfnil_node: URI,
+    ) -> Self {
         let mut lists: HashMap<URI, Vec<URI>> = HashMap::new();
         // keeps track of data associated with each list element
         let mut values: HashMap<URI, URI> = HashMap::new();
         // disjoint set data structure
         let mut uri2idx: HashMap<URI, usize> = HashMap::new();
-        let mut idx2uri: Vec<URI> = Vec::with_capacity(input.len());
+        let mut idx2uri: Vec<URI> = Vec::new();
         let mut counter: usize = 0;
+        // only rdf:first and rdf:rest triples describe lists
+        let input: Vec<KeyedTriple> = input
+            .into_iter()
+            .filter(|&&(_, (p, _))| p == rdffirst_node || p == rdfrest_node)
+            .copied()
+            .collect();
         for &(a, (b, c)) in input.iter() {
             for e in [a, b, c] {
                 let index = uri2idx.entry(e).or_insert(counter);
