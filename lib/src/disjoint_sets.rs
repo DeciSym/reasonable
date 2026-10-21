@@ -1,7 +1,7 @@
 use crate::common::{KeyedTriple, URI};
 use datafrog::Iteration;
 use disjoint_sets::UnionFind;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 pub struct DisjointSets {
     lists: HashMap<URI, Vec<URI>>,
