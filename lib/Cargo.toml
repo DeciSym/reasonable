@@ -15,6 +15,7 @@ rio_api.workspace = true
 oxrdf.workspace = true
 datafrog.workspace = true
 disjoint-sets.workspace = true
+hashbrown.workspace = true
 log.workspace = true
 thiserror = "1.0"
 quick-xml = "0.42"
