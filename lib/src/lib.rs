@@ -22,6 +22,7 @@ mod disjoint_sets;
 pub mod error;
 #[allow(dead_code)]
 mod index;
+mod join;
 #[allow(dead_code)]
 pub mod reasoner;
 
