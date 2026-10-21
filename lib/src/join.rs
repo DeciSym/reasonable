@@ -37,6 +37,22 @@ pub(crate) fn join_filter_into<'me, K: Ord, V1: Ord, V2: Ord, R: Ord>(
     output.insert(Relation::from_vec(results));
 }
 
+/// The run of tuples with `key` in each of a variable's sorted batches.
+pub(crate) fn key_slices<'a, K: Ord, V>(
+    batches: impl Iterator<Item = &'a [(K, V)]>,
+    key: K,
+) -> impl Iterator<Item = &'a [(K, V)]>
+where
+    K: 'a,
+    V: 'a,
+{
+    batches.map(move |batch| {
+        let start = batch.partition_point(|(k, _)| *k < key);
+        let len = batch[start..].partition_point(|(k, _)| *k == key);
+        &batch[start..start + len]
+    })
+}
+
 // From datafrog 2.0.1 (MIT/Apache-2.0), where it is private.
 fn join_helper<K: Ord, V1, V2>(
     mut slice1: &[(K, V1)],

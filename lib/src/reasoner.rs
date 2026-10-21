@@ -5,7 +5,7 @@ use datafrog::{Iteration, Relation, Variable};
 
 use crate::disjoint_sets::DisjointSets;
 use crate::index::URIIndex;
-use crate::join::{join_each, join_filter_into};
+use crate::join::{join_each, join_filter_into, key_slices};
 
 use crate::common::*;
 use log::{error, info};
@@ -1315,6 +1315,8 @@ impl Reasoner {
         let mut changed = true;
         //let mut established_complementary_instances: HashSet<Triple> = HashSet::new();
         let mut new_complementary_instances: HashSet<KeyedTriple> = HashSet::new();
+        // (intersection class, list) pairs cls-int1 has checked in full during this call
+        let mut checked_intersections: HashSet<(URI, URI)> = HashSet::new();
         while changed {
             self.all_triples_input
                 .extend(new_complementary_instances.drain());
@@ -1342,10 +1344,12 @@ impl Reasoner {
                         (obj, (sub, pred))
                     });
 
-                self.rdf_type.from_join(&self.pso, &self.rdf_type_relation, |&_, &tup, &()| {
-                    self.instances.borrow_mut().insert(tup);
-                    tup
-                });
+                self.rdf_type
+                    .from_join(&self.pso, &self.rdf_type_relation, |&_, &tup, &()| tup);
+                // each tuple is recent exactly once
+                self.instances
+                    .borrow_mut()
+                    .extend(self.rdf_type.recent.borrow().iter().copied());
                 self.rdf_type_inv
                     .borrow_mut()
                     .from_map(&self.rdf_type, |&(inst, class)| (class, inst));
@@ -1894,66 +1898,53 @@ impl Reasoner {
                 }
 
                 // cls-int1
-                // Optimized implementation:
-                // 1. Build a temporary index `class -> [instances]` from `self.instances`.
-                // 2. For each intersection list:
-                //    a. Select the class in the list with the fewest instances to minimize candidates.
-                //    b. Verify if these candidate instances belong to all other classes in the list.
-                let mut class_instances: HashMap<URI, Vec<URI>> = HashMap::new();
-                for (inst, class) in self.instances.borrow().iter() {
-                    class_instances.entry(*class).or_default().push(*inst);
-                }
-
+                // For each intersection list:
+                //  a. Skip it unless it is new or one of its classes gained instances this
+                //     round; otherwise it can produce nothing it has not produced already.
+                //  b. Take the instances of the class in the list with the fewest instances,
+                //     read from rdf_type_inv's sorted batches.
+                //  c. Verify if these candidate instances belong to all other classes in the list.
                 let mut new_cls_int1_instances = Vec::new();
-                for (intersection_class, listname) in self.intersections.borrow().iter() {
-                    let listname = *listname;
-                    let intersection_class = *intersection_class;
-                    if let Some(values) = ds.get_list_values(listname) {
-                        if values.is_empty() {
+                {
+                    let rdf_type_inv = self.rdf_type_inv.borrow();
+                    let stable = rdf_type_inv.stable.borrow();
+                    let recent = rdf_type_inv.recent.borrow();
+                    let batches = || {
+                        stable
+                            .iter()
+                            .map(|batch| &batch[..])
+                            .chain(Some(&recent[..]))
+                    };
+                    // recent is sorted by class
+                    let mut changed: Vec<URI> = recent.iter().map(|&(class, _)| class).collect();
+                    changed.dedup();
+                    let instances = self.instances.borrow();
+                    for (&intersection_class, &listname) in self.intersections.borrow().iter() {
+                        let Some(values) = ds.get_list_values(listname) else {
+                            continue;
+                        };
+                        let is_new = checked_intersections.insert((intersection_class, listname));
+                        if !is_new && !values.iter().any(|c| changed.binary_search(c).is_ok()) {
                             continue;
                         }
-
-                        // Optimization: Start with the class having the fewest instances
-                        let mut best_class = values[0];
-                        let mut min_len = usize::MAX;
-                        let mut empty_intersection = false;
-
-                        for &cls in values {
-                            match class_instances.get(&cls) {
-                                Some(insts) => {
-                                    if insts.len() < min_len {
-                                        min_len = insts.len();
-                                        best_class = cls;
-                                    }
-                                }
-                                None => {
-                                    // One of the classes has no instances, so intersection is empty
-                                    empty_intersection = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if empty_intersection {
+                        let Some((best_class, min_len)) = values
+                            .iter()
+                            .map(|&c| (c, key_slices(batches(), c).map(<[_]>::len).sum::<usize>()))
+                            .min_by_key(|&(_, len)| len)
+                        else {
+                            continue;
+                        };
+                        if min_len == 0 {
+                            // One of the classes has no instances, so intersection is empty
                             continue;
                         }
-
-                        if let Some(candidates) = class_instances.get(&best_class) {
-                            for &inst in candidates {
-                                let mut all_match = true;
-                                for &cls in values {
-                                    if cls == best_class {
-                                        continue;
-                                    }
-                                    if !self.instances.borrow().contains(&(inst, cls)) {
-                                        all_match = false;
-                                        break;
-                                    }
-                                }
-                                if all_match {
-                                    new_cls_int1_instances
-                                        .push((inst, (rdftype_node, intersection_class)));
-                                }
+                        for &(_, inst) in key_slices(batches(), best_class).flatten() {
+                            if values
+                                .iter()
+                                .all(|&cls| cls == best_class || instances.contains(&(inst, cls)))
+                            {
+                                new_cls_int1_instances
+                                    .push((inst, (rdftype_node, intersection_class)));
                             }
                         }
                     }
