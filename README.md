@@ -76,6 +76,23 @@ $ reasonable model.ttl --error-format json --fail-on cax-dw,prp-pdw -o out.ttl
 ```
 
 
+### Streaming RDFS (`--rdfs`)
+
+With `--rdfs VOCABULARY`, the CLI applies RDFS (subclasses, sub-properties, domains and ranges) to a
+single Turtle or N-Triples file instead of OWL 2 RL reasoning, taking schema only from the vocabulary,
+the way Apache Jena's `riot --rdfs=VOCABULARY` does. It writes each input triple followed by what RDFS
+entails about it as N-Triples, without the vocabulary's own triples. The data streams through, so memory
+is bounded by the vocabulary. Unlike riot, it also applies the domains and ranges of super-properties,
+adds the superclasses of types inferred through sub-properties of `rdf:type`, and does not skip
+sub-property inference when the vocabulary declares no subclasses.
+
+```
+$ reasonable --rdfs ontology.ttl data.nt -o inferred.nt
+```
+
+From Rust, build a `reasonable::rdfs::RdfsVocabulary` and call `infer` for each triple, or
+`reasonable::rdfs::materialize_file` for a whole file.
+
 ### Python
 
 To facilitate usage, we use the [pyo3](https://pyo3.rs/) project to generate Python 3.x bindings to this project.

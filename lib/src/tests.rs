@@ -3016,3 +3016,209 @@ fn test_set_base_triples_equivalence() {
 
     assert_eq!(incr, full_res, "Incremental set_base_triples should match full materialization");
 }
+
+// --- Streaming RDFS against a fixed vocabulary (rdfs.rs) ---
+
+/// Parses Turtle in which the ex:, rdf:, rdfs: and owl: prefixes are declared
+fn turtle(body: &str) -> Vec<oxrdf::Triple> {
+    use rio_api::parser::TriplesParser;
+    let text = format!(
+        "@prefix ex: <urn:ex:> .
+         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+         @prefix owl: <http://www.w3.org/2002/07/owl#> .
+         {body}"
+    );
+    let mut triples = Vec::new();
+    rio_turtle::TurtleParser::new(text.as_bytes(), None)
+        .parse_all(&mut |t| {
+            triples.push(crate::common::rio_to_oxrdf(t));
+            Ok(()) as Result<(), rio_turtle::TurtleError>
+        })
+        .unwrap();
+    triples
+}
+
+/// What streaming RDFS infers from the `data` triples given `vocabulary`, sorted
+fn rdfs_infers(vocabulary: &str, data: &str) -> Vec<String> {
+    let vocabulary = crate::rdfs::RdfsVocabulary::new(turtle(vocabulary));
+    let mut inferred = Vec::new();
+    for triple in turtle(data) {
+        vocabulary
+            .infer(triple.as_ref(), |t| {
+                inferred.push(t.to_string());
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+    }
+    inferred.sort();
+    inferred
+}
+
+fn ex_type(individual: &str, class: &str) -> String {
+    format!("<urn:ex:{individual}> {} <urn:ex:{class}>", wrap!(RDF_TYPE))
+}
+
+fn ex_triple(s: &str, p: &str, o: &str) -> String {
+    format!("<urn:ex:{s}> <urn:ex:{p}> <urn:ex:{o}>")
+}
+
+#[test]
+fn test_rdfs_superclasses_of_stated_type() {
+    let inferred = rdfs_infers(
+        "ex:A rdfs:subClassOf ex:B . ex:B rdfs:subClassOf ex:C .",
+        "ex:x a ex:A .",
+    );
+    assert_eq!(inferred, vec![ex_type("x", "B"), ex_type("x", "C")]);
+}
+
+#[test]
+fn test_rdfs_domain_and_range_with_superclasses() {
+    let inferred = rdfs_infers(
+        "ex:p rdfs:domain ex:D ; rdfs:range ex:R .
+         ex:D rdfs:subClassOf ex:E . ex:R rdfs:subClassOf ex:S .",
+        "ex:x ex:p ex:y .",
+    );
+    assert_eq!(
+        inferred,
+        vec![ex_type("x", "D"), ex_type("x", "E"), ex_type("y", "R"), ex_type("y", "S")]
+    );
+}
+
+#[test]
+fn test_rdfs_range_does_not_type_literals() {
+    assert!(rdfs_infers("ex:p rdfs:range ex:R .", "ex:x ex:p \"v\" .").is_empty());
+}
+
+#[test]
+fn test_rdfs_subproperties_without_subclasses() {
+    // riot skips sub-property inference when the vocabulary declares no subclasses
+    let inferred = rdfs_infers(
+        "ex:p rdfs:subPropertyOf ex:q . ex:q rdfs:subPropertyOf ex:r .",
+        "ex:x ex:p ex:y .",
+    );
+    assert_eq!(inferred, vec![ex_triple("x", "q", "y"), ex_triple("x", "r", "y")]);
+}
+
+#[test]
+fn test_rdfs_domain_and_range_of_super_property() {
+    // riot applies only the domain and range of the property used
+    let inferred = rdfs_infers(
+        "ex:p rdfs:subPropertyOf ex:q . ex:q rdfs:domain ex:D ; rdfs:range ex:R .",
+        "ex:x ex:p ex:y .",
+    );
+    assert_eq!(
+        inferred,
+        vec![ex_type("x", "D"), ex_triple("x", "q", "y"), ex_type("y", "R")]
+    );
+}
+
+#[test]
+fn test_rdfs_superclasses_of_type_from_sub_property_of_type() {
+    // riot infers `ex:x a ex:A` but not its superclass
+    let inferred = rdfs_infers(
+        "ex:isA rdfs:subPropertyOf rdf:type . ex:A rdfs:subClassOf ex:B .",
+        "ex:x ex:isA ex:A .",
+    );
+    assert_eq!(inferred, vec![ex_type("x", "A"), ex_type("x", "B")]);
+}
+
+#[test]
+fn test_rdfs_domain_of_type() {
+    let inferred = rdfs_infers(
+        "rdf:type rdfs:domain ex:Typed . ex:A rdfs:subClassOf ex:B .",
+        "ex:x a ex:A .",
+    );
+    assert_eq!(inferred, vec![ex_type("x", "B"), ex_type("x", "Typed")]);
+}
+
+#[test]
+fn test_rdfs_cyclic_subclasses() {
+    let inferred = rdfs_infers(
+        "ex:A rdfs:subClassOf ex:B . ex:B rdfs:subClassOf ex:A .",
+        "ex:x a ex:A .",
+    );
+    assert_eq!(inferred, vec![ex_type("x", "B")]);
+}
+
+#[test]
+fn test_rdfs_ignores_schema_in_data_and_owl() {
+    // only the vocabulary's RDFS schema counts
+    let inferred = rdfs_infers(
+        "ex:C owl:equivalentClass ex:D . ex:p owl:inverseOf ex:q .",
+        "ex:A rdfs:subClassOf ex:B . ex:x a ex:A , ex:C . ex:x ex:p ex:y .",
+    );
+    assert!(inferred.is_empty(), "{inferred:?}");
+}
+
+#[test]
+fn test_rdfs_vocabulary_blank_nodes_stay_apart_from_data() {
+    // the vocabulary's _:c and the data's _:c are different nodes
+    let inferred = rdfs_infers(
+        "ex:p rdfs:domain _:c . _:c rdfs:subClassOf ex:E .",
+        "_:c ex:p ex:y .",
+    );
+    let rdf_type = wrap!(RDF_TYPE);
+    assert_eq!(inferred.len(), 2, "{inferred:?}");
+    assert!(inferred.contains(&format!("_:c {rdf_type} <urn:ex:E>")), "{inferred:?}");
+    let class = inferred
+        .iter()
+        .find_map(|t| t.strip_prefix(&format!("_:c {rdf_type} _:")))
+        .expect("a type from the blank node domain");
+    assert_ne!(class, "c");
+}
+
+#[test]
+fn test_rdfs_materialize_file_writes_input_then_inferences() -> crate::error::Result<()> {
+    let dir = std::env::temp_dir();
+    let vocabulary = dir.join(format!("reasonable-rdfs-vocab-{}.ttl", std::process::id()));
+    let data = dir.join(format!("reasonable-rdfs-data-{}.nt", std::process::id()));
+    std::fs::write(
+        &vocabulary,
+        "<urn:ex:A> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <urn:ex:B> .\n\
+         <urn:ex:label> <http://www.w3.org/2000/01/rdf-schema#domain> <urn:ex:Named> .\n",
+    )?;
+    let input = format!(
+        "_:b0 {rdf_type} <urn:ex:A> .\n\
+         _:b0 <urn:ex:label> \"chat\"@fr .\n\
+         <urn:ex:y> <urn:ex:count> \"01\"^^<http://www.w3.org/2001/XMLSchema#integer> .\n",
+        rdf_type = wrap!(RDF_TYPE)
+    );
+    std::fs::write(&data, &input)?;
+    let vocabulary_rdfs = crate::rdfs::RdfsVocabulary::from_file(&vocabulary)?;
+    let mut output = Vec::new();
+    let counts = crate::rdfs::materialize_file(&vocabulary_rdfs, &data, &mut output)?;
+    std::fs::remove_file(&vocabulary)?;
+    std::fs::remove_file(&data)?;
+    let output = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = output.lines().collect();
+    let input: Vec<&str> = input.lines().collect();
+    let rdf_type = wrap!(RDF_TYPE);
+    // each input line, unchanged and with its blank node label, followed by its inferences
+    assert_eq!(
+        lines,
+        vec![
+            input[0],
+            &format!("_:b0 {rdf_type} <urn:ex:B> .") as &str,
+            input[1],
+            &format!("_:b0 {rdf_type} <urn:ex:Named> .") as &str,
+            input[2],
+        ]
+    );
+    assert_eq!(counts, crate::rdfs::RdfsCounts { input: 3, inferred: 2 });
+    Ok(())
+}
+
+#[test]
+fn test_load_file_nt() -> crate::error::Result<()> {
+    let path = std::env::temp_dir().join(format!("reasonable-load-{}.nt", std::process::id()));
+    std::fs::write(&path, "<urn:ex:a> <urn:ex:p> <urn:ex:b> .\n")?;
+    let mut r = Reasoner::new();
+    r.load_file(path.to_str().unwrap())?;
+    std::fs::remove_file(&path)?;
+    assert!(r
+        .get_input()
+        .iter()
+        .any(|t| t.subject.to_string() == "<urn:ex:a>"));
+    Ok(())
+}

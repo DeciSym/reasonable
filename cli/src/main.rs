@@ -1,5 +1,8 @@
 use clap::{ArgAction, Parser, ValueEnum};
+use reasonable::rdfs::{self, RdfsVocabulary};
 use reasonable::reasoner::Reasoner;
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use env_logger::Env;
@@ -33,12 +36,37 @@ struct Cli {
     /// Only print a summary of diagnostics
     #[arg(long, action = ArgAction::SetTrue)]
     summary_only: bool,
+    /// Instead of OWL 2 RL reasoning, stream RDFS inference over a single input file with
+    /// schema taken only from this vocabulary (like `riot --rdfs`), writing the input and
+    /// what it entails as N-Triples
+    #[arg(long, value_name = "VOCABULARY")]
+    rdfs: Option<PathBuf>,
 }
 
 fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
+
+    if let Some(vocabulary) = &cli.rdfs {
+        if cli.input_files.len() != 1 {
+            eprintln!("--rdfs takes exactly one input file");
+            std::process::exit(2);
+        }
+        info!("Loading vocabulary {}", vocabulary.display());
+        let vocabulary = RdfsVocabulary::from_file(vocabulary).unwrap();
+        let start = Instant::now();
+        let output = BufWriter::new(File::create(&cli.output_file).unwrap());
+        let counts = rdfs::materialize_file(&vocabulary, &cli.input_files[0], output).unwrap();
+        info!(
+            "Wrote {} input and {} inferred triples to {} in {:.02}sec",
+            counts.input,
+            counts.inferred,
+            cli.output_file.display(),
+            start.elapsed().as_secs_f64()
+        );
+        return;
+    }
 
     let mut r = Reasoner::new();
 

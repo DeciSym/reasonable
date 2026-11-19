@@ -1212,7 +1212,7 @@ impl Reasoner {
     ///
     /// Supports:
     /// - Turtle files: ".ttl"
-    /// - N-Triples files: ".n3"
+    /// - N-Triples files: ".nt" or ".n3"
     ///
     /// Returns an error for unsupported extensions.
     pub fn load_file(&mut self, filename: &str) -> crate::error::Result<()> {
@@ -1241,12 +1241,12 @@ impl Reasoner {
         };
         if filename.ends_with(".ttl") {
             TurtleParser::new(f, None).parse_all(&mut add)?;
-        } else if filename.ends_with(".n3") {
+        } else if filename.ends_with(".nt") || filename.ends_with(".n3") {
             NTriplesParser::new(f).parse_all(&mut add)?;
         } else {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
-                "no parser for file (only ttl and n3)",
+                "no parser for file (only ttl, nt and n3)",
             )
             .into());
         }
