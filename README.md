@@ -82,6 +82,19 @@ $ reasonable model.ttl --error-format json --fail-on cax-dw,prp-pdw -o out.ttl
 ```
 
 
+### Streaming RDFS (library)
+
+`reasonable::rdfs` applies RDFS (subclasses, sub-properties, domains and ranges) to data triples
+one at a time, taking schema only from a vocabulary, the way Apache Jena's `riot --rdfs=VOCABULARY`
+does. Only the vocabulary is held in memory, so data of any size can stream through. Unlike riot,
+it also applies the domains and ranges of super-properties, adds the superclasses of types inferred
+through sub-properties of `rdf:type`, and does not skip sub-property inference when the vocabulary
+declares no subclasses.
+
+Build a `reasonable::rdfs::RdfsVocabulary` and call `infer` for each triple, or
+`reasonable::rdfs::materialize_file` to write a whole Turtle or N-Triples file followed by its
+inferences as N-Triples.
+
 ### Python
 
 To facilitate usage, we use the [pyo3](https://pyo3.rs/) project to generate Python 3.x bindings to this project.

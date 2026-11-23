@@ -23,8 +23,12 @@ pub mod error;
 mod index;
 mod join;
 mod list_rules;
+pub mod rdfs;
 #[allow(dead_code)]
 pub mod reasoner;
+
+/// The version of this crate, for recording which reasoner produced a result
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
 mod tests;
